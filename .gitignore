@@ -1,0 +1,26 @@
+# Environment
+.env
+.env.local
+backend/.env
+frontend/.env.local
+
+# Python
+backend/venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Database
+backend/usmle_exam.db
+
+# Uploads and extracted images (user data, not source code)
+backend/uploads/
+backend/static/images/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# macOS
+.DS_Store
