@@ -70,10 +70,30 @@ export default function Home() {
     const form = new FormData()
     form.append('answer_pdf', file)
     try {
-      await api.post(`/exams/${examSetId}/upload-answer-key`, form)
+      const { data } = await api.post(`/exams/${examSetId}/upload-answer-key`, form)
+      const { job_id } = data
+
+      await new Promise((resolve, reject) => {
+        const interval = setInterval(async () => {
+          try {
+            const { data: job } = await api.get(`/exams/upload-status/${job_id}`)
+            if (job.status === 'done') {
+              clearInterval(interval)
+              resolve()
+            } else if (job.status === 'error') {
+              clearInterval(interval)
+              reject(new Error(job.error || 'Answer key upload failed.'))
+            }
+          } catch (err) {
+            clearInterval(interval)
+            reject(err)
+          }
+        }, 3000)
+      })
+
       fetchExamSets()
     } catch (err) {
-      alert(err.response?.data?.detail || 'Answer key upload failed.')
+      alert(err.message || err.response?.data?.detail || 'Answer key upload failed.')
     } finally {
       setUploadingAnswers(null)
     }

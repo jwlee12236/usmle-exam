@@ -18,6 +18,37 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 _jobs: dict = {}
 
 
+def _process_answer_key(job_id: str, pdf_path: str, exam_set_id: int):
+    db = SessionLocal()
+    try:
+        parsed = extract_questions_from_pdf(pdf_path, exam_set_id, has_answers=True)
+        updated = 0
+        for q_data in parsed:
+            if not q_data.get("correct_answer"):
+                continue
+            question = (
+                db.query(models.Question)
+                .filter(
+                    models.Question.exam_set_id == exam_set_id,
+                    models.Question.question_number == q_data["question_number"],
+                )
+                .first()
+            )
+            if question:
+                question.correct_answer = q_data["correct_answer"]
+                question.explanation = q_data.get("explanation", "")
+                updated += 1
+
+        exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
+        exam_set.answer_pdf_path = pdf_path
+        db.commit()
+        _jobs[job_id] = {"status": "done", "updated_questions": updated}
+    except Exception as e:
+        _jobs[job_id] = {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
+
 def _process_upload(job_id: str, pdf_path: str, exam_set_id: int):
     db = SessionLocal()
     try:
@@ -109,6 +140,7 @@ def upload_status(job_id: str):
 @router.post("/{exam_set_id}/upload-answer-key")
 async def upload_answer_key(
     exam_set_id: int,
+    background_tasks: BackgroundTasks,
     answer_pdf: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -121,33 +153,11 @@ async def upload_answer_key(
     with open(pdf_path, "wb") as f:
         shutil.copyfileobj(answer_pdf.file, f)
 
-    try:
-        parsed = extract_questions_from_pdf(str(pdf_path), exam_set_id, has_answers=True)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Answer key parsing failed: {str(e)}")
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "processing", "updated_questions": None, "error": None}
+    background_tasks.add_task(_process_answer_key, job_id, str(pdf_path), exam_set_id)
 
-    # Update existing questions with correct answers and explanations
-    updated = 0
-    for q_data in parsed:
-        if not q_data.get("correct_answer"):
-            continue
-        question = (
-            db.query(models.Question)
-            .filter(
-                models.Question.exam_set_id == exam_set_id,
-                models.Question.question_number == q_data["question_number"],
-            )
-            .first()
-        )
-        if question:
-            question.correct_answer = q_data["correct_answer"]
-            question.explanation = q_data.get("explanation", "")
-            updated += 1
-
-    exam_set.answer_pdf_path = str(pdf_path)
-    db.commit()
-
-    return {"updated_questions": updated}
+    return {"job_id": job_id}
 
 
 @router.get("/{exam_set_id}/questions")
