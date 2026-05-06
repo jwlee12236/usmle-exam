@@ -55,8 +55,11 @@ Return ONLY valid JSON, no other text."""
 
 def ocr_page(page: fitz.Page, hint_number: int | None = None) -> str:
     """Render page as image and extract USMLE question text with Claude Haiku."""
-    pix = page.get_pixmap(dpi=150)
-    img_b64 = base64.standard_b64encode(pix.tobytes("png")).decode()
+    pix = page.get_pixmap(dpi=100)
+    img_bytes = pix.tobytes("png")
+    pix = None  # release pixmap memory
+    img_b64 = base64.standard_b64encode(img_bytes).decode()
+    img_bytes = None
 
     if hint_number is not None:
         hint = f" This is question number {hint_number}."
@@ -98,11 +101,15 @@ def detect_figure_on_page(page: fitz.Page) -> dict | None:
     target_h = int(native_h * scale)
 
     img = Image.frombytes("RGB", (native_w, native_h), pix.samples)
+    pix = None  # release pixmap memory
     img_small = img.resize((target_w, target_h), Image.LANCZOS)
+    img = None  # release original image
 
     buf = io.BytesIO()
     img_small.save(buf, format="PNG")
+    img_small = None  # release resized image
     img_b64 = base64.standard_b64encode(buf.getvalue()).decode()
+    buf = None
 
     response = _client.messages.create(
         model="claude-haiku-4-5-20251001",

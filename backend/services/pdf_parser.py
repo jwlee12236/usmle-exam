@@ -1,3 +1,4 @@
+import gc
 import re
 import uuid
 import fitz  # PyMuPDF
@@ -115,6 +116,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             except Exception as e:
                 print(f"OCR failed for page {page_num}: {e}")
                 page_text = ""
+            gc.collect()
 
         for line in page_text.split("\n"):
             m = QUESTION_START_RE.match(line.lstrip().rstrip())
@@ -148,6 +150,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
         except Exception as e:
             print(f"Vision detection failed for Q{q['question_number']}: {e}")
             bbox = None
+        gc.collect()
 
         if bbox:
             margin = 60
