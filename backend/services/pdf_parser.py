@@ -96,7 +96,7 @@ def _page_is_image_based(page_text: str) -> bool:
 
 
 def _page_has_no_question(page_text: str) -> bool:
-    """True if page has meaningful text but no question number — hybrid page with embedded image question."""
+    """True if page has meaningful text but no question number."""
     return not any(QUESTION_START_RE.match(l.lstrip().rstrip()) for l in page_text.split('\n'))
 
 
@@ -122,8 +122,9 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
                 print(f"OCR failed for page {page_num}: {e}")
                 page_text = ""
             gc.collect()
-        elif has_answers and _page_has_no_question(page_text):
-            # Hybrid answer key page: explanation as text but question is an embedded image
+        elif has_answers and _page_has_no_question(page_text) and page.get_images():
+            # Hybrid answer key page: has an embedded image question + text explanation
+            # (pure text explanation pages with no images are skipped)
             item_m = _ITEM_NUM_RE.search(page_text)
             hint_num = int(item_m.group(1)) if item_m else None
             try:
