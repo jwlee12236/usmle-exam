@@ -1,10 +1,11 @@
 import shutil
+import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 import fitz
-from database import get_db
+from database import get_db, SessionLocal
 import models
 from services.pdf_parser import extract_questions_from_pdf
 
@@ -12,6 +13,50 @@ router = APIRouter(prefix="/exams", tags=["exams"])
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+# In-memory job store (single worker, so this is safe)
+_jobs: dict = {}
+
+
+def _process_upload(job_id: str, pdf_path: str, exam_set_id: int):
+    db = SessionLocal()
+    try:
+        parsed_questions = extract_questions_from_pdf(pdf_path, exam_set_id)
+        if not parsed_questions:
+            exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
+            if exam_set:
+                db.delete(exam_set)
+                db.commit()
+            _jobs[job_id] = {"status": "error", "error": "No questions found in PDF. Check the file format."}
+            return
+
+        for q in parsed_questions:
+            db.add(models.Question(
+                exam_set_id=exam_set_id,
+                question_number=q["question_number"],
+                stem=q["stem"],
+                choices=q["choices"],
+                image_paths=q.get("image_paths", []),
+                pdf_page=q.get("pdf_page"),
+                correct_answer=q.get("correct_answer"),
+                explanation=q.get("explanation"),
+            ))
+
+        exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
+        exam_set.total_questions = len(parsed_questions)
+        db.commit()
+        _jobs[job_id] = {"status": "done", "exam_set_id": exam_set_id}
+    except Exception as e:
+        try:
+            exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
+            if exam_set:
+                db.delete(exam_set)
+                db.commit()
+        except Exception:
+            pass
+        _jobs[job_id] = {"status": "error", "error": str(e)}
+    finally:
+        db.close()
 
 
 @router.get("/")
@@ -31,53 +76,34 @@ def list_exam_sets(db: Session = Depends(get_db)):
 
 @router.post("/upload")
 async def upload_exam(
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     question_pdf: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    # Save uploaded PDF
     pdf_filename = f"{name.replace(' ', '_')}_{question_pdf.filename}"
     pdf_path = UPLOADS_DIR / pdf_filename
     with open(pdf_path, "wb") as f:
         shutil.copyfileobj(question_pdf.file, f)
 
-    # Create exam set record first to get ID for image naming
     exam_set = models.ExamSet(name=name, question_pdf_path=str(pdf_path))
     db.add(exam_set)
     db.commit()
     db.refresh(exam_set)
 
-    # Parse PDF
-    try:
-        parsed_questions = extract_questions_from_pdf(str(pdf_path), exam_set.id)
-    except Exception as e:
-        db.delete(exam_set)
-        db.commit()
-        raise HTTPException(status_code=422, detail=f"PDF parsing failed: {str(e)}")
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "processing", "exam_set_id": None, "error": None}
+    background_tasks.add_task(_process_upload, job_id, str(pdf_path), exam_set.id)
 
-    if not parsed_questions:
-        db.delete(exam_set)
-        db.commit()
-        raise HTTPException(status_code=422, detail="No questions found in PDF. Check the file format.")
+    return {"job_id": job_id}
 
-    # Store questions
-    for q in parsed_questions:
-        question = models.Question(
-            exam_set_id=exam_set.id,
-            question_number=q["question_number"],
-            stem=q["stem"],
-            choices=q["choices"],
-            image_paths=q.get("image_paths", []),
-            pdf_page=q.get("pdf_page"),
-            correct_answer=q.get("correct_answer"),
-            explanation=q.get("explanation"),
-        )
-        db.add(question)
 
-    exam_set.total_questions = len(parsed_questions)
-    db.commit()
-
-    return {"id": exam_set.id, "name": name, "total_questions": len(parsed_questions)}
+@router.get("/upload-status/{job_id}")
+def upload_status(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @router.post("/{exam_set_id}/upload-answer-key")

@@ -33,12 +33,33 @@ export default function Home() {
     form.append('name', examName.trim())
     form.append('question_pdf', questionFile)
     try {
-      await api.post('/exams/upload', form)
+      const { data } = await api.post('/exams/upload', form)
+      const { job_id } = data
+
+      // Poll for completion
+      await new Promise((resolve, reject) => {
+        const interval = setInterval(async () => {
+          try {
+            const { data: job } = await api.get(`/exams/upload-status/${job_id}`)
+            if (job.status === 'done') {
+              clearInterval(interval)
+              resolve()
+            } else if (job.status === 'error') {
+              clearInterval(interval)
+              reject(new Error(job.error || 'Upload failed.'))
+            }
+          } catch (err) {
+            clearInterval(interval)
+            reject(err)
+          }
+        }, 3000)
+      })
+
       setExamName('')
       setQuestionFile(null)
       fetchExamSets()
     } catch (err) {
-      setError(err.response?.data?.detail || 'Upload failed.')
+      setError(err.message || err.response?.data?.detail || 'Upload failed.')
     } finally {
       setUploading(false)
     }
@@ -105,7 +126,7 @@ export default function Home() {
             />
             {error && <div style={styles.error}>{error}</div>}
             <button type="submit" disabled={uploading} style={styles.btn}>
-              {uploading ? 'Parsing PDF...' : 'Upload & Parse'}
+              {uploading ? 'Processing... (may take a few minutes)' : 'Upload & Parse'}
             </button>
           </form>
         </div>
