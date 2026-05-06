@@ -28,6 +28,23 @@ E. [choice E]
 Preserve all medical terminology, numbers, units, and symbols exactly. \
 Include every answer choice shown. Do not include any UI chrome (header, navigation buttons, etc.)."""
 
+_OCR_ANSWER_PROMPT = """\
+This is a screenshot of a USMLE/NBME answer key question.{hint}
+
+Extract the question and identify the correct answer (it may be visually highlighted, \
+bolded, checked, or marked in any way).
+
+Return in EXACTLY this format with no other text:
+{number}. [full question stem]
+A. [choice A]
+B. [choice B]
+C. [choice C]
+D. [choice D]
+E. [choice E]
+Correct Answer: [single letter of correct answer]
+
+Preserve all medical terminology exactly. Do not include UI chrome."""
+
 _PROMPT = """This is a page from a medical exam (USMLE/NBME style).
 
 Does this page contain a clinical figure embedded within the question — such as:
@@ -53,7 +70,7 @@ If no clinical figure is present:
 Return ONLY valid JSON, no other text."""
 
 
-def ocr_page(page: fitz.Page, hint_number: int | None = None) -> str:
+def ocr_page(page: fitz.Page, hint_number: int | None = None, has_answers: bool = False) -> str:
     """Render page as image and extract USMLE question text with Claude Haiku."""
     pix = page.get_pixmap(dpi=100)
     img_bytes = pix.tobytes("png")
@@ -68,6 +85,7 @@ def ocr_page(page: fitz.Page, hint_number: int | None = None) -> str:
         hint = " Identify the question number from the image and use it in the output."
         number = "[N]"
 
+    prompt_template = _OCR_ANSWER_PROMPT if has_answers else _OCR_PROMPT
     response = _client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=2000,
@@ -75,7 +93,7 @@ def ocr_page(page: fitz.Page, hint_number: int | None = None) -> str:
             "role": "user",
             "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}},
-                {"type": "text", "text": _OCR_PROMPT.format(hint=hint, number=number)},
+                {"type": "text", "text": prompt_template.format(hint=hint, number=number)},
             ],
         }],
     )

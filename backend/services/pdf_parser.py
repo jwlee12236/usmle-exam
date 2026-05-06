@@ -95,6 +95,11 @@ def _page_is_image_based(page_text: str) -> bool:
     return len(meaningful) < 3
 
 
+def _page_has_no_question(page_text: str) -> bool:
+    """True if page has meaningful text but no question number — hybrid page with embedded image question."""
+    return not any(QUESTION_START_RE.match(l.lstrip().rstrip()) for l in page_text.split('\n'))
+
+
 def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: bool = False) -> list[dict]:
     from services.vision import detect_figure_on_page, ocr_page  # lazy import to avoid startup cost
 
@@ -111,11 +116,24 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             item_m = _ITEM_NUM_RE.search(page_text)
             hint_num = int(item_m.group(1)) if item_m else None
             try:
-                page_text = ocr_page(page, hint_num)
+                page_text = ocr_page(page, hint_num, has_answers=has_answers)
                 print(f"OCR page {page_num} (Q{hint_num}): {page_text[:80]}")
             except Exception as e:
                 print(f"OCR failed for page {page_num}: {e}")
                 page_text = ""
+            gc.collect()
+        elif has_answers and _page_has_no_question(page_text):
+            # Hybrid answer key page: explanation as text but question is an embedded image
+            item_m = _ITEM_NUM_RE.search(page_text)
+            hint_num = int(item_m.group(1)) if item_m else None
+            try:
+                ocr_text = ocr_page(page, hint_num, has_answers=True)
+                # Normalize bracket notation: [36]. → 36.
+                ocr_text = re.sub(r'(?m)^\[(\d+)\]', r'\1', ocr_text)
+                page_text = ocr_text + "\n" + page_text
+                print(f"OCR hybrid page {page_num} (Q{hint_num}): {ocr_text[:80]}")
+            except Exception as e:
+                print(f"OCR failed for hybrid page {page_num}: {e}")
             gc.collect()
 
         for line in page_text.split("\n"):
