@@ -100,12 +100,66 @@ def _page_has_no_question(page_text: str) -> bool:
     return not any(QUESTION_START_RE.match(l.lstrip().rstrip()) for l in page_text.split('\n'))
 
 
+def _detect_answer_key_format(doc) -> str:
+    """
+    Detect answer key format:
+      'compact'    — few pages, plain text answer list (e.g. '1. A - explanation')
+      'image_only' — all/most pages are screenshots, requires 100+ OCR calls (skip)
+      'standard'   — full Q+A+explanation pages, current approach
+    """
+    n_pages = len(doc)
+    if n_pages <= 15:
+        return "compact"
+    sample = min(8, n_pages)
+    image_count = sum(1 for i in range(sample) if _page_is_image_based(doc[i].get_text("text")))
+    if image_count >= sample * 0.8:
+        return "image_only"
+    return "standard"
+
+
+def _parse_compact_answers(text: str) -> list[dict]:
+    """
+    Parse compact answer key format: lines like '1. A', '1. A - explanation',
+    '1) B', '16. J - ...'. Handles any capital letter as an answer.
+    """
+    results = []
+    answer_re = re.compile(r'^\s*(\d+)[.)]\s*([A-Z])\b', re.MULTILINE)
+    seen = set()
+    for m in answer_re.finditer(text):
+        qn = int(m.group(1))
+        if qn in seen:
+            continue
+        seen.add(qn)
+        results.append({
+            "question_number": qn,
+            "correct_answer": m.group(2).upper(),
+            "stem": "",
+            "choices": {},
+        })
+    return results
+
+
 def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: bool = False) -> list[dict]:
     from services.vision import detect_figure_on_page, ocr_page  # lazy import to avoid startup cost
 
     doc = fitz.open(pdf_path)
 
-    # Build full text and track which PDF page each question starts on
+    # --- Answer key: detect format and short-circuit for compact/image_only ---
+    if has_answers:
+        fmt = _detect_answer_key_format(doc)
+        print(f"Answer key format: {fmt} ({len(doc)} pages)")
+
+        if fmt == "compact":
+            full_text = "".join(page.get_text("text") + "\n" for page in doc)
+            doc.close()
+            return _parse_compact_answers(full_text)
+
+        if fmt == "image_only":
+            print("Image-only answer key — skipping OCR to avoid memory overload. Upload a text-based answer key for scoring.")
+            doc.close()
+            return []
+
+    # --- Build full text and track which PDF page each question starts on ---
     full_text = ""
     question_page: dict[int, int] = {}  # question_number -> page_num
 
@@ -123,13 +177,11 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
                 page_text = ""
             gc.collect()
         elif has_answers and _page_has_no_question(page_text) and page.get_images():
-            # Hybrid answer key page: has an embedded image question + text explanation
-            # (pure text explanation pages with no images are skipped)
+            # Hybrid page: embedded image question + text explanation below
             item_m = _ITEM_NUM_RE.search(page_text)
             hint_num = int(item_m.group(1)) if item_m else None
             try:
                 ocr_text = ocr_page(page, hint_num, has_answers=True)
-                # Normalize bracket notation: [36]. → 36.
                 ocr_text = re.sub(r'(?m)^\[(\d+)\]', r'\1', ocr_text)
                 page_text = ocr_text + "\n" + page_text
                 print(f"OCR hybrid page {page_num} (Q{hint_num}): {ocr_text[:80]}")
