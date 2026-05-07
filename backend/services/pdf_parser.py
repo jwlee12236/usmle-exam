@@ -144,8 +144,9 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
 
     doc = fitz.open(pdf_path)
 
-    # --- Answer key: detect format and short-circuit for compact/image_only ---
+    # --- Answer key: two-phase approach (text pass → targeted OCR for gaps) ---
     if has_answers:
+        from services.vision import extract_answer_from_page
         fmt = _detect_answer_key_format(doc)
         print(f"Answer key format: {fmt} ({len(doc)} pages)")
 
@@ -154,12 +155,72 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             doc.close()
             return _parse_compact_answers(full_text)
 
-        if fmt == "image_only":
-            print("Image-only answer key — skipping OCR to avoid memory overload. Upload a text-based answer key for scoring.")
-            doc.close()
-            return []
+        # Phase 1: pure text extraction — no API calls
+        answer_map: dict[int, str] = {}   # question_num -> answer_letter
+        page_for_q: dict[int, int] = {}   # question_num -> page_num (for OCR fallback)
 
-    # --- Build full text and track which PDF page each question starts on ---
+        _answer_re = re.compile(
+            r"(?:Correct answer|Answer|The correct answer is)[:\s]+([A-G])\b",
+            re.IGNORECASE,
+        )
+
+        for page_num, page in enumerate(doc):
+            page_text = page.get_text("text")
+            # Track which question is on this page
+            for line in page_text.split("\n"):
+                m = QUESTION_START_RE.match(line.lstrip().rstrip())
+                if m:
+                    qn = int(m.group(1).replace(" ", ""))
+                    if qn not in page_for_q:
+                        page_for_q[qn] = page_num
+                    break
+            # Extract answer from text if present
+            ans_m = _answer_re.search(page_text)
+            if ans_m:
+                # Associate with question number found on this page (or previous)
+                current_q = None
+                for line in page_text.split("\n"):
+                    m = QUESTION_START_RE.match(line.lstrip().rstrip())
+                    if m:
+                        current_q = int(m.group(1).replace(" ", ""))
+                        break
+                if current_q:
+                    answer_map[current_q] = ans_m.group(1).upper()
+
+        # Phase 2: targeted OCR only for pages we couldn't get from text
+        if fmt == "image_only":
+            # All pages need OCR — check every page
+            pages_to_check = list(range(len(doc)))
+        else:
+            # Standard: only OCR the pages of questions still missing answers
+            missing_qnums = set(page_for_q.keys()) - set(answer_map.keys())
+            pages_to_check = [page_for_q[qn] for qn in missing_qnums if qn in page_for_q]
+            # Also check pages not mapped to any question (might have answers we missed)
+            mapped_pages = set(page_for_q.values())
+            for pnum in range(len(doc)):
+                if pnum not in mapped_pages:
+                    pages_to_check.append(pnum)
+
+        print(f"Targeted OCR: {len(pages_to_check)} pages")
+        for pnum in pages_to_check:
+            try:
+                result = extract_answer_from_page(doc[pnum])
+                if result:
+                    qn, letter = result
+                    if qn not in answer_map:
+                        answer_map[qn] = letter
+                        print(f"  OCR page {pnum} → Q{qn}: {letter}")
+            except Exception as e:
+                print(f"  OCR failed page {pnum}: {e}")
+            gc.collect()
+
+        doc.close()
+        return [
+            {"question_number": qn, "correct_answer": letter, "stem": "", "choices": {}}
+            for qn, letter in sorted(answer_map.items())
+        ]
+
+    # --- Question PDF: build full text and track page per question ---
     full_text = ""
     question_page: dict[int, int] = {}  # question_number -> page_num
 
@@ -170,23 +231,11 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             item_m = _ITEM_NUM_RE.search(page_text)
             hint_num = int(item_m.group(1)) if item_m else None
             try:
-                page_text = ocr_page(page, hint_num, has_answers=has_answers)
+                page_text = ocr_page(page, hint_num)
                 print(f"OCR page {page_num} (Q{hint_num}): {page_text[:80]}")
             except Exception as e:
                 print(f"OCR failed for page {page_num}: {e}")
                 page_text = ""
-            gc.collect()
-        elif has_answers and _page_has_no_question(page_text) and page.get_images():
-            # Hybrid page: embedded image question + text explanation below
-            item_m = _ITEM_NUM_RE.search(page_text)
-            hint_num = int(item_m.group(1)) if item_m else None
-            try:
-                ocr_text = ocr_page(page, hint_num, has_answers=True)
-                ocr_text = re.sub(r'(?m)^\[(\d+)\]', r'\1', ocr_text)
-                page_text = ocr_text + "\n" + page_text
-                print(f"OCR hybrid page {page_num} (Q{hint_num}): {ocr_text[:80]}")
-            except Exception as e:
-                print(f"OCR failed for hybrid page {page_num}: {e}")
             gc.collect()
 
         for line in page_text.split("\n"):
@@ -199,11 +248,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
         full_text += page_text + "\n"
 
     full_text = _clean_pdf_text(full_text)
-
-    if has_answers:
-        questions = _parse_answer_key(full_text, {})
-    else:
-        questions = _parse_questions_only(full_text, {})
+    questions = _parse_questions_only(full_text, {})
 
     # For each question, ask Claude Haiku if that page has a clinical figure.
     # If yes, crop and save just the figure region as the question image.

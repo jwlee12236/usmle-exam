@@ -70,6 +70,53 @@ If no clinical figure is present:
 Return ONLY valid JSON, no other text."""
 
 
+_TARGETED_ANSWER_PROMPT = """\
+This is a page from a USMLE/NBME answer key.
+
+Tell me:
+1. The question number (look for "Item N of 50", a header, or the number at the start of the question)
+2. The correct answer letter — it may appear as "Correct Answer: X", or be highlighted/circled/bolded among the answer choices
+
+Reply in EXACTLY this format (nothing else):
+Q[number] [letter]
+
+Examples: "Q23 E"  or  "Q7 B"
+
+If this page has no question (just explanation text), reply: none
+If you see the question but truly cannot determine the correct answer, reply: Q[number] unknown"""
+
+
+def extract_answer_from_page(page: fitz.Page) -> tuple[int, str] | None:
+    """
+    Targeted extraction: returns (question_number, answer_letter) or None.
+    Uses a tiny max_tokens budget — fast and low-memory.
+    """
+    import re
+    pix = page.get_pixmap(dpi=72)
+    img_bytes = pix.tobytes("png")
+    pix = None
+    img_b64 = base64.standard_b64encode(img_bytes).decode()
+    img_bytes = None
+
+    response = _client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=20,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}},
+                {"type": "text", "text": _TARGETED_ANSWER_PROMPT},
+            ],
+        }],
+    )
+    img_b64 = None
+    text = response.content[0].text.strip()
+    m = re.match(r'Q(\d+)\s+([A-Z])\b', text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)), m.group(2).upper()
+    return None
+
+
 def ocr_page(page: fitz.Page, hint_number: int | None = None, has_answers: bool = False) -> str:
     """Render page as image and extract USMLE question text with Claude Haiku."""
     pix = page.get_pixmap(dpi=100)
