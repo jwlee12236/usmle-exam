@@ -115,18 +115,55 @@ If this page has no question (just explanation text), reply: none
 If you see the question but truly cannot determine the correct answer, reply: Q[number] unknown"""
 
 
+def _detect_content_bounds(img) -> tuple[int, int]:
+    """
+    Scan pixel rows to find where dark header/footer bands end.
+    Returns (top_y, bottom_y) in pixels. Falls back to full image extent if no band found.
+    Works on any image format — dark UI chrome (e.g. NBME navy bars) reads as low brightness.
+    """
+    gray = img.convert("L")
+    pixels = gray.load()
+    w, h = gray.size
+    DARK = 100  # avg row brightness below this = part of a dark UI band
+    step = max(1, w // 50)
+    n = len(range(0, w, step))
+
+    def row_avg(y):
+        return sum(pixels[x, y] for x in range(0, w, step)) / n
+
+    top_y = 0
+    for y in range(h // 4):
+        if row_avg(y) >= DARK:
+            top_y = y
+            break
+
+    bottom_y = h
+    for y in range(h - 1, h * 3 // 4, -1):
+        if row_avg(y) >= DARK:
+            bottom_y = y + 1
+            break
+
+    return top_y, bottom_y
+
+
 def ocr_page_structured(page: fitz.Page, hint_number: int | None = None) -> dict | None:
     """OCR a page and return {question_number, stem, choices} as a dict, or None on failure."""
-    pr = page.rect
-    # Physically crop the top 10% (header bar with exam title) and bottom 10% (nav footer)
-    # so Claude never sees "Surgery Self-Assessment" or nav buttons — prompt instructions alone
-    # are not reliable enough with Haiku.
-    clip = fitz.Rect(0, pr.height * 0.10, pr.width, pr.height * 0.90)
-    pix = page.get_pixmap(dpi=72, clip=clip)
-    img_bytes = pix.tobytes("png")
+    from PIL import Image
+    import io
+
+    pix = page.get_pixmap(dpi=72)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     pix = None
-    img_b64 = base64.standard_b64encode(img_bytes).decode()
-    img_bytes = None
+
+    top_y, bottom_y = _detect_content_bounds(img)
+    img_cropped = img.crop((0, top_y, img.width, bottom_y))
+    img = None
+
+    buf = io.BytesIO()
+    img_cropped.save(buf, format="PNG")
+    img_cropped = None
+    img_b64 = base64.standard_b64encode(buf.getvalue()).decode()
+    buf = None
 
     hint = f" This is question number {hint_number}." if hint_number is not None else \
         " Identify the question number from the image."
