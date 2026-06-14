@@ -28,6 +28,8 @@ _JUNK_EXACT = {
     '■ mark', 'mark',
     'obstetrics and gynecology self-assessment',
     'gynecology and obstetrics self-assessment',
+    ',',   # lone comma — navigation separator artifact (e.g. "P , r ,")
+    'p',   # disabled "Previous" button extracted as bare "P" on the first question page
 }
 _JUNK_RE = re.compile(
     r'^([Q0Oo]|r|~|~\s*p,?\s*r,?|https?://\S+|exam section\s*:.*'
@@ -48,12 +50,50 @@ _MEANINGFUL_RE = re.compile(
 # NBME header format "Item N of 50" — used to extract question number from image-based pages
 _ITEM_NUM_RE = re.compile(r'Item\s+(\d+)\s+of\s+\d+', re.IGNORECASE)
 
+# Lab table detection: PDF column extraction puts all names first, then all values.
+# Name lines: letters/spaces/hyphens only (no leading digit).
+# Value lines: number (possibly with commas/decimals) followed by a unit.
+_LAB_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z\s\-\(\)]{2,}$')
+_LAB_VALUE_RE = re.compile(r'^[><=]?[\d,]+\.?\d*\s*[a-zA-Z%/µ³·]+')
+
 # Stem phrases that indicate a question contains a clinical image/figure that must be shown
 _VISUAL_RE = re.compile(
     r'\b(shown|tracing|graph|figure|photograph|radiograph|x[\s-]?ray|mri|ct scan'
     r'|ecg|ekg|electrocardiogram|histolog|slide|biopsy|image|scan)\b',
     re.IGNORECASE,
 )
+
+
+def _format_lab_tables(stem: str) -> str:
+    """
+    PDF column extraction puts all lab-test names first, then all values as separate lines.
+    Detect runs of N name-only lines followed by N value lines (N >= 2) and interleave them
+    as "Name: Value" pairs so the stem reads naturally.
+    """
+    lines = stem.split('\n')
+    out = []
+    i = 0
+    while i < len(lines):
+        ls = lines[i].strip()
+        if _LAB_NAME_RE.match(ls):
+            # Gather consecutive name-only lines
+            names, j = [], i
+            while j < len(lines) and _LAB_NAME_RE.match(lines[j].strip()):
+                names.append(lines[j].strip())
+                j += 1
+            # Gather consecutive value lines immediately after
+            values, k = [], j
+            while k < len(lines) and _LAB_VALUE_RE.match(lines[k].strip()):
+                values.append(lines[k].strip())
+                k += 1
+            if len(names) >= 2 and len(names) == len(values):
+                for name, value in zip(names, values):
+                    out.append(f"{name}: {value}")
+                i = k
+                continue
+        out.append(lines[i])
+        i += 1
+    return '\n'.join(out)
 
 
 def _clean_pdf_text(text: str) -> str:
@@ -415,7 +455,7 @@ def _parse_questions_only(text: str, page_images: dict) -> list[dict]:
             # a number <= the current question (e.g. "2." inside Q3 is ignored)
             if q_num > current_num:
                 if current_q:
-                    current_q["stem"] = current_q["stem"].strip()
+                    current_q["stem"] = _format_lab_tables(current_q["stem"].strip())
                     questions.append(current_q)
                 rest = q_match.group(2).strip()
                 current_q = {
@@ -443,7 +483,7 @@ def _parse_questions_only(text: str, page_images: dict) -> list[dict]:
                 current_q["choices"][last_letter] += " " + ls
 
     if current_q:
-        current_q["stem"] = current_q["stem"].strip()
+        current_q["stem"] = _format_lab_tables(current_q["stem"].strip())
         questions.append(current_q)
 
     return questions
