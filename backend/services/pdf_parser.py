@@ -28,13 +28,18 @@ _JUNK_EXACT = {
     '■ mark', 'mark',
     'obstetrics and gynecology self-assessment',
     'gynecology and obstetrics self-assessment',
-    ',',   # lone comma — navigation separator artifact (e.g. "P , r ,")
-    'p',   # disabled "Previous" button extracted as bare "P" on the first question page
+    ',',    # lone comma — navigation separator artifact (e.g. "P , r ,")
+    '.',    # lone period — punctuation artifact after last choice
+    ',.',   # comma+period artifact (e.g. page 17 line 32: ",. ")
+    'p',    # disabled "Previous" button extracted as bare "P" on page 1
+    'on admission',          # multi-column table column header
+    'now',                   # multi-column table column header (e.g. "Now" column)
 }
 _JUNK_RE = re.compile(
     r'^([Q0Oo]|r|~|~\s*p,?\s*r,?|https?://\S+|exam section\s*:.*'
     r'|\d+\s*hr\s*\d+\s*min\s*\d+\s*sec|item\s+\d+\s+of\s+\d+'
     r'|[\w\s\-]+self.?assessment'
+    r'|\d+\s+\w+\s+after\s+\w+'   # e.g. "2 Days After Admission" column header
     r')$',
     re.IGNORECASE,
 )
@@ -53,7 +58,7 @@ _ITEM_NUM_RE = re.compile(r'Item\s+(\d+)\s+of\s+\d+', re.IGNORECASE)
 # Lab table detection: PDF column extraction puts all names first, then all values.
 # Name lines: letters/spaces/hyphens only (no leading digit).
 # Value lines: number (possibly with commas/decimals) followed by a unit.
-_LAB_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z\s\-\(\)]{2,}$')
+_LAB_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9\s\-\+\(\)/²³µ°±]{1,59}$')
 _LAB_VALUE_RE = re.compile(r'^[><=]?[\d,]+\.?\d*\s*[a-zA-Z%/µ³·]+')
 
 # Stem phrases that indicate a question contains a clinical image/figure that must be shown
@@ -477,10 +482,9 @@ def _parse_questions_only(text: str, page_images: dict) -> list[dict]:
         elif current_section == "stem" and ls and _MEANINGFUL_RE.search(ls):
             # Only add lines that contain real words or lab values — drops chart/graph noise
             current_q["stem"] += ls + "\n"
-        elif current_section == "choices" and ls and current_q["choices"]:
-            if not (_JUNK_RE.match(ls) or ls.lower() in _JUNK_EXACT):
-                last_letter = list(current_q["choices"].keys())[-1]
-                current_q["choices"][last_letter] += " " + ls
+        # NBME choices are always single-line — do not append post-choice content.
+        # Table chrome (second column values, column headers) appears after choices
+        # in the PDF text layer and must not bleed into the last answer choice.
 
     if current_q:
         current_q["stem"] = _format_lab_tables(current_q["stem"].strip())
