@@ -117,7 +117,12 @@ If you see the question but truly cannot determine the correct answer, reply: Q[
 
 def ocr_page_structured(page: fitz.Page, hint_number: int | None = None) -> dict | None:
     """OCR a page and return {question_number, stem, choices} as a dict, or None on failure."""
-    pix = page.get_pixmap(dpi=72)
+    pr = page.rect
+    # Physically crop the top 10% (header bar with exam title) and bottom 10% (nav footer)
+    # so Claude never sees "Surgery Self-Assessment" or nav buttons — prompt instructions alone
+    # are not reliable enough with Haiku.
+    clip = fitz.Rect(0, pr.height * 0.10, pr.width, pr.height * 0.90)
+    pix = page.get_pixmap(dpi=72, clip=clip)
     img_bytes = pix.tobytes("png")
     pix = None
     img_b64 = base64.standard_b64encode(img_bytes).decode()
