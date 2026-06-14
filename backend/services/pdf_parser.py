@@ -139,8 +139,54 @@ def _parse_compact_answers(text: str) -> list[dict]:
     return results
 
 
+def _fill_gap(
+    doc: fitz.Document,
+    gap_qn: int,
+    question_page: dict,
+    page_to_q: dict,
+    questions_map: dict,
+    ocr_structured,
+) -> None:
+    """Re-OCR candidate pages between known neighbors to recover a missing question."""
+    lower_q = max((q for q in question_page if q < gap_qn), default=None)
+    upper_q = min((q for q in question_page if q > gap_qn), default=None)
+
+    if lower_q is not None and upper_q is not None:
+        lo, hi = question_page[lower_q], question_page[upper_q]
+        candidates = [p for p in range(lo + 1, hi) if p not in page_to_q]
+    elif lower_q is not None:
+        lo = question_page[lower_q]
+        candidates = [p for p in [lo + 1, lo + 2] if p < len(doc) and p not in page_to_q]
+    elif upper_q is not None:
+        hi = question_page[upper_q]
+        candidates = [p for p in [hi - 1, hi - 2] if p >= 0 and p not in page_to_q]
+    else:
+        return
+
+    for page_num in candidates:
+        try:
+            sq = ocr_structured(doc[page_num], gap_qn)
+        except Exception:
+            sq = None
+        gc.collect()
+        fitz.TOOLS.store_shrink(100)
+        if sq and sq["question_number"] == gap_qn:
+            questions_map[gap_qn] = {
+                "question_number": gap_qn,
+                "stem": sq["stem"],
+                "choices": sq["choices"],
+                "image_paths": [],
+            }
+            question_page[gap_qn] = page_num
+            page_to_q[page_num] = gap_qn
+            print(f"  Gap-fill: Q{gap_qn} recovered from page {page_num}")
+            return
+
+    print(f"  Gap-fill: Q{gap_qn} not found in {len(candidates)} candidate page(s)")
+
+
 def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: bool = False) -> list[dict]:
-    from services.vision import detect_figure_on_page, ocr_page  # lazy import to avoid startup cost
+    from services.vision import detect_figure_on_page, ocr_page, ocr_page_structured  # lazy import to avoid startup cost
 
     doc = fitz.open(pdf_path)
 
@@ -221,9 +267,10 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             for qn, letter in sorted(answer_map.items())
         ]
 
-    # --- Question PDF: build full text and track page per question ---
+    # --- Question PDF ---
     page_texts: list[str] = []
-    question_page: dict[int, int] = {}  # question_number -> page_num
+    structured_questions: dict[int, dict] = {}   # qn → {stem, choices} from structured OCR
+    question_page: dict[int, int] = {}           # question_number → page_num
 
     for page_num, page in enumerate(doc):
         page_text = page.get_text("text")
@@ -231,27 +278,73 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
         if _page_is_image_based(page_text):
             item_m = _ITEM_NUM_RE.search(page_text)
             hint_num = int(item_m.group(1)) if item_m else None
+
+            sq = None
             try:
-                page_text = ocr_page(page, hint_num)
-                print(f"OCR page {page_num} (Q{hint_num}): {page_text[:80]}")
+                sq = ocr_page_structured(page, hint_num)
             except Exception as e:
-                print(f"OCR failed for page {page_num}: {e}")
-                page_text = ""
+                print(f"Structured OCR failed page {page_num}: {e}")
+
+            if sq:
+                qn = sq["question_number"]
+                structured_questions[qn] = sq
+                question_page[qn] = page_num
+                print(f"Structured OCR page {page_num} → Q{qn}")
+            else:
+                # Fall back to plain OCR → regex parse
+                try:
+                    page_text = ocr_page(page, hint_num)
+                    print(f"OCR fallback page {page_num} (Q{hint_num}): {page_text[:80]}")
+                except Exception as e:
+                    print(f"OCR failed page {page_num}: {e}")
+                    page_text = ""
+                for line in page_text.split("\n"):
+                    m = QUESTION_START_RE.match(line.lstrip().rstrip())
+                    if m:
+                        qn = int(m.group(1).replace(" ", ""))
+                        if qn not in question_page:
+                            question_page[qn] = page_num
+                        break
+                page_texts.append(page_text)
+
             gc.collect()
             fitz.TOOLS.store_shrink(100)
+        else:
+            for line in page_text.split("\n"):
+                m = QUESTION_START_RE.match(line.lstrip().rstrip())
+                if m:
+                    qn = int(m.group(1).replace(" ", ""))
+                    if qn not in question_page:
+                        question_page[qn] = page_num
+                    break
+            page_texts.append(page_text)
 
-        for line in page_text.split("\n"):
-            m = QUESTION_START_RE.match(line.lstrip().rstrip())
-            if m:
-                qn = int(m.group(1).replace(" ", ""))
-                if qn not in question_page:
-                    question_page[qn] = page_num
-                break
-        page_texts.append(page_text)
-
+    # Parse text-based and OCR-fallback pages via regex
     full_text = _clean_pdf_text("\n".join(page_texts))
     page_texts.clear()
-    questions = _parse_questions_only(full_text, {})
+    text_questions = _parse_questions_only(full_text, {})
+
+    # Structured (JSON) questions take priority over regex-parsed ones
+    questions_map: dict[int, dict] = {q["question_number"]: q for q in text_questions}
+    for qn, sq in structured_questions.items():
+        questions_map[qn] = {
+            "question_number": qn,
+            "stem": sq["stem"],
+            "choices": sq["choices"],
+            "image_paths": [],
+        }
+
+    # Gap detection: find missing numbers and re-OCR candidate pages
+    if questions_map:
+        found = set(questions_map.keys())
+        missing = sorted(set(range(min(found), max(found) + 1)) - found)
+        if missing:
+            print(f"Gap detection: missing questions {missing}")
+            page_to_q = {v: k for k, v in question_page.items()}
+            for gap_qn in missing:
+                _fill_gap(doc, gap_qn, question_page, page_to_q, questions_map, ocr_page_structured)
+
+    questions = sorted(questions_map.values(), key=lambda q: q["question_number"])
 
     # For each question, ask Claude Haiku if that page has a clinical figure.
     # If yes, crop and save just the figure region as the question image.

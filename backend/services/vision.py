@@ -70,6 +70,29 @@ If no clinical figure is present:
 Return ONLY valid JSON, no other text."""
 
 
+_STRUCTURED_OCR_PROMPT = """\
+This is a screenshot of a USMLE/NBME exam question.{hint}
+
+Extract the question and return ONLY valid JSON in this exact format:
+{{
+  "question_number": <integer>,
+  "stem": "<complete question stem>",
+  "choices": {{
+    "A": "<choice A text>",
+    "B": "<choice B text>",
+    "C": "<choice C text>",
+    "D": "<choice D text>",
+    "E": "<choice E text>"
+  }}
+}}
+
+Rules:
+- question_number must be an integer
+- stem is everything before the first answer choice; preserve all medical terms, numbers, units
+- Include ALL answer choices shown (may be A–D, A–E, or more)
+- Do NOT include UI chrome: navigation buttons, timer, header bar
+- Return ONLY the JSON object, no markdown or explanation"""
+
 _TARGETED_ANSWER_PROMPT = """\
 This is a page from a USMLE/NBME answer key.
 
@@ -84,6 +107,53 @@ Examples: "Q23 E"  or  "Q7 B"
 
 If this page has no question (just explanation text), reply: none
 If you see the question but truly cannot determine the correct answer, reply: Q[number] unknown"""
+
+
+def ocr_page_structured(page: fitz.Page, hint_number: int | None = None) -> dict | None:
+    """OCR a page and return {question_number, stem, choices} as a dict, or None on failure."""
+    pix = page.get_pixmap(dpi=72)
+    img_bytes = pix.tobytes("png")
+    pix = None
+    img_b64 = base64.standard_b64encode(img_bytes).decode()
+    img_bytes = None
+
+    hint = f" This is question number {hint_number}." if hint_number is not None else \
+        " Identify the question number from the image."
+
+    try:
+        response = _client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}},
+                    {"type": "text", "text": _STRUCTURED_OCR_PROMPT.format(hint=hint)},
+                ],
+            }],
+        )
+    finally:
+        img_b64 = None
+
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    try:
+        data = json.loads(raw)
+        qn = int(data["question_number"])
+        stem = str(data.get("stem", "")).strip()
+        choices = {k.upper(): str(v).strip() for k, v in data.get("choices", {}).items() if k and v}
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+    if not stem or not choices:
+        return None
+
+    return {"question_number": qn, "stem": stem, "choices": choices}
 
 
 def extract_answer_from_page(page: fitz.Page) -> tuple[int, str] | None:
