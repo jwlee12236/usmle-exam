@@ -90,7 +90,13 @@ Rules:
 - question_number must be an integer
 - stem is everything before the first answer choice; preserve all medical terms, numbers, units
 - Include ALL answer choices shown (may be A–D, A–E, or more)
-- Do NOT include UI chrome: navigation buttons, timer, header bar
+- Do NOT include ANY UI chrome in the stem or choices: navigation buttons (Previous/Next/Help/Pause/Review), \
+timer, header bar, exam section label (e.g. "Exam Section: Item N of 50"), exam title \
+(e.g. "Surgery Self-Assessment", "National Board of Medical Examiners"), URLs, or watermarks
+- Each answer choice must contain ONLY the choice text — never append any exam title, header, or footer text \
+to the end of a choice; the last visible answer choice is especially prone to this — strip it
+- If the stem contains a data table (lab values, vitals, columns of test names and results), \
+render it as a GitHub-flavored markdown table using | pipe syntax to preserve alignment
 - Return ONLY the JSON object, no markdown or explanation"""
 
 _TARGETED_ANSWER_PROMPT = """\
