@@ -3,6 +3,58 @@ import { staticUrl } from '../api'
 
 const CHOICE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
 
+function mergeRanges(ranges) {
+  if (!ranges.length) return []
+  const sorted = [...ranges].sort((a, b) => a.start - b.start)
+  const result = [{ ...sorted[0] }]
+  for (let i = 1; i < sorted.length; i++) {
+    const last = result[result.length - 1]
+    if (sorted[i].start <= last.end) {
+      last.end = Math.max(last.end, sorted[i].end)
+    } else {
+      result.push({ ...sorted[i] })
+    }
+  }
+  return result
+}
+
+function getCharOffset(container, node, offset) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+  let total = 0
+  while (walker.nextNode()) {
+    if (walker.currentNode === node) return total + offset
+    total += walker.currentNode.textContent.length
+  }
+  return total + offset
+}
+
+function renderWithHighlights(text, highlights, onRemove) {
+  if (!highlights || highlights.length === 0) return text
+  const merged = mergeRanges(highlights)
+  const segments = []
+  let pos = 0
+  for (const h of merged) {
+    if (pos < h.start) segments.push({ text: text.slice(pos, h.start), hl: false })
+    segments.push({ text: text.slice(h.start, h.end), hl: true, start: h.start, end: h.end })
+    pos = h.end
+  }
+  if (pos < text.length) segments.push({ text: text.slice(pos), hl: false })
+  return segments.map((seg, i) =>
+    seg.hl
+      ? (
+        <mark
+          key={i}
+          style={styles.highlight}
+          onClick={(e) => { e.stopPropagation(); onRemove(seg.start, seg.end) }}
+          title="Click to remove highlight"
+        >
+          {seg.text}
+        </mark>
+      )
+      : <span key={i}>{seg.text}</span>
+  )
+}
+
 export default function QuestionPanel({
   question,
   answerState,
@@ -13,19 +65,42 @@ export default function QuestionPanel({
   const { stem, choices, image_paths, question_number } = question
   const { selectedAnswer, eliminatedChoices = [], isFlagged } = answerState
 
-  // Text highlighting via mouseup
   const stemRef = useRef(null)
-  const [highlights, setHighlights] = useState([]) // not persisted for now
+  const [highlightsMap, setHighlightsMap] = useState({})
+  const currentHighlights = highlightsMap[question_number] || []
 
-  const handleMouseUp = () => {
-    const selection = window.getSelection()
-    if (selection && selection.toString().trim().length > 0) {
-      // Could implement rich highlighting here; for now just visual feedback
-    }
-  }
+  useEffect(() => {
+    window.getSelection()?.removeAllRanges()
+  }, [question_number])
+
+  const removeHighlight = useCallback((start, end) => {
+    setHighlightsMap(prev => {
+      const existing = prev[question_number] || []
+      const next = existing.filter(h => !(h.start === start && h.end === end))
+      return { ...prev, [question_number]: next }
+    })
+  }, [question_number])
+
+  const handleMouseUp = useCallback(() => {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed || !stemRef.current) return
+    const range = sel.getRangeAt(0)
+    if (!stemRef.current.contains(range.commonAncestorContainer)) return
+
+    const start = getCharOffset(stemRef.current, range.startContainer, range.startOffset)
+    const end = getCharOffset(stemRef.current, range.endContainer, range.endOffset)
+    if (start >= end) return
+
+    setHighlightsMap(prev => {
+      const existing = prev[question_number] || []
+      const next = mergeRanges([...existing, { start, end }])
+      return { ...prev, [question_number]: next }
+    })
+    sel.removeAllRanges()
+  }, [question_number])
 
   const handleChoiceClick = (letter) => {
-    if (eliminatedChoices.includes(letter)) return // can't select eliminated
+    if (eliminatedChoices.includes(letter)) return
     onAnswer(letter === selectedAnswer ? null : letter)
   }
 
@@ -45,7 +120,7 @@ export default function QuestionPanel({
         style={styles.stem}
         onMouseUp={handleMouseUp}
       >
-        {stem}
+        {renderWithHighlights(stem, currentHighlights, removeHighlight)}
       </div>
 
       {/* Inline figure — only shown when vision detection found a graph/table/image */}
@@ -85,7 +160,7 @@ export default function QuestionPanel({
       </div>
 
       <div style={styles.hint}>
-        Double-click a choice to eliminate it. Click again to restore.
+        Double-click a choice to eliminate it. Drag to highlight text in the question. Click a highlight to remove it.
       </div>
     </div>
   )
@@ -147,6 +222,12 @@ const styles = {
     whiteSpace: 'pre-wrap',
     cursor: 'text',
     userSelect: 'text',
+  },
+  highlight: {
+    background: '#fef08a',
+    borderRadius: 2,
+    cursor: 'pointer',
+    padding: '0 1px',
   },
   imageRow: {
     marginBottom: 20,
