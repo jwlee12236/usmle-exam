@@ -31,7 +31,9 @@ _JUNK_EXACT = {
 }
 _JUNK_RE = re.compile(
     r'^([Q0Oo]|r|~|~\s*p,?\s*r,?|https?://\S+|exam section\s*:.*'
-    r'|\d+\s*hr\s*\d+\s*min\s*\d+\s*sec|item\s+\d+\s+of\s+\d+)$',
+    r'|\d+\s*hr\s*\d+\s*min\s*\d+\s*sec|item\s+\d+\s+of\s+\d+'
+    r'|[\w\s\-]+self.?assessment'
+    r')$',
     re.IGNORECASE,
 )
 
@@ -436,8 +438,9 @@ def _parse_questions_only(text: str, page_images: dict) -> list[dict]:
             # Only add lines that contain real words or lab values — drops chart/graph noise
             current_q["stem"] += ls + "\n"
         elif current_section == "choices" and ls and current_q["choices"]:
-            last_letter = list(current_q["choices"].keys())[-1]
-            current_q["choices"][last_letter] += " " + ls
+            if not (_JUNK_RE.match(ls) or ls.lower() in _JUNK_EXACT):
+                last_letter = list(current_q["choices"].keys())[-1]
+                current_q["choices"][last_letter] += " " + ls
 
     if current_q:
         current_q["stem"] = current_q["stem"].strip()
