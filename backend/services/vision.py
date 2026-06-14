@@ -119,7 +119,7 @@ def extract_answer_from_page(page: fitz.Page) -> tuple[int, str] | None:
 
 def ocr_page(page: fitz.Page, hint_number: int | None = None, has_answers: bool = False) -> str:
     """Render page as image and extract USMLE question text with Claude Haiku."""
-    pix = page.get_pixmap(dpi=100)
+    pix = page.get_pixmap(dpi=72)
     img_bytes = pix.tobytes("png")
     pix = None  # release pixmap memory
     img_b64 = base64.standard_b64encode(img_bytes).decode()

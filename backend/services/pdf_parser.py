@@ -213,6 +213,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             except Exception as e:
                 print(f"  OCR failed page {pnum}: {e}")
             gc.collect()
+            fitz.TOOLS.store_shrink(100)
 
         doc.close()
         return [
@@ -221,7 +222,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
         ]
 
     # --- Question PDF: build full text and track page per question ---
-    full_text = ""
+    page_texts: list[str] = []
     question_page: dict[int, int] = {}  # question_number -> page_num
 
     for page_num, page in enumerate(doc):
@@ -237,6 +238,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
                 print(f"OCR failed for page {page_num}: {e}")
                 page_text = ""
             gc.collect()
+            fitz.TOOLS.store_shrink(100)
 
         for line in page_text.split("\n"):
             m = QUESTION_START_RE.match(line.lstrip().rstrip())
@@ -245,9 +247,10 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
                 if qn not in question_page:
                     question_page[qn] = page_num
                 break
-        full_text += page_text + "\n"
+        page_texts.append(page_text)
 
-    full_text = _clean_pdf_text(full_text)
+    full_text = _clean_pdf_text("\n".join(page_texts))
+    page_texts.clear()
     questions = _parse_questions_only(full_text, {})
 
     # For each question, ask Claude Haiku if that page has a clinical figure.
@@ -267,6 +270,7 @@ def extract_questions_from_pdf(pdf_path: str, exam_set_id: int, has_answers: boo
             print(f"Vision detection failed for Q{q['question_number']}: {e}")
             bbox = None
         gc.collect()
+        fitz.TOOLS.store_shrink(100)
 
         if bbox:
             margin = 60
