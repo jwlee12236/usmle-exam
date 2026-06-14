@@ -3,6 +3,7 @@ Uses Claude Haiku to detect whether a PDF page contains a clinical figure
 (graph, chart, lab table, image) and returns its bounding box if so.
 """
 import os
+import re
 import base64
 import json
 from pathlib import Path
@@ -119,28 +120,33 @@ def _detect_content_bounds(img) -> tuple[int, int]:
     """
     Scan pixel rows to find where dark header/footer bands end.
     Returns (top_y, bottom_y) in pixels. Falls back to full image extent if no band found.
-    Works on any image format — dark UI chrome (e.g. NBME navy bars) reads as low brightness.
+
+    Uses DARK=150 so that white text on a dark navy bar (avg ~100-104) is still
+    classified as a dark-band row rather than content. Content rows (white bg + black
+    text) average ~200+, well above the threshold. Tracks the LAST dark row in each
+    edge zone rather than the first bright row — more robust against anti-aliasing.
     """
     gray = img.convert("L")
     pixels = gray.load()
     w, h = gray.size
-    DARK = 100  # avg row brightness below this = part of a dark UI band
+    DARK = 150
     step = max(1, w // 50)
     n = len(range(0, w, step))
 
     def row_avg(y):
         return sum(pixels[x, y] for x in range(0, w, step)) / n
 
+    # Last dark row in top 25% → crop everything up to and including it
     top_y = 0
     for y in range(h // 4):
-        if row_avg(y) >= DARK:
-            top_y = y
-            break
+        if row_avg(y) < DARK:
+            top_y = y + 1
 
+    # First dark row in bottom 25% → crop everything from it downward
     bottom_y = h
-    for y in range(h - 1, h * 3 // 4, -1):
-        if row_avg(y) >= DARK:
-            bottom_y = y + 1
+    for y in range(h * 3 // 4, h):
+        if row_avg(y) < DARK:
+            bottom_y = y
             break
 
     return top_y, bottom_y
@@ -194,7 +200,8 @@ def ocr_page_structured(page: fitz.Page, hint_number: int | None = None) -> dict
         data = json.loads(raw)
         qn = int(data["question_number"])
         stem = str(data.get("stem", "")).strip()
-        choices = {k.upper(): str(v).strip() for k, v in data.get("choices", {}).items() if k and v}
+        choices = {k.upper(): _strip_ui_chrome(str(v)).strip()
+                   for k, v in data.get("choices", {}).items() if k and v}
     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         return None
 
@@ -202,6 +209,27 @@ def ocr_page_structured(page: fitz.Page, hint_number: int | None = None) -> dict
         return None
 
     return {"question_number": qn, "stem": stem, "choices": choices}
+
+
+# Trailing UI chrome that sometimes bleeds into the last answer choice.
+# Pattern matches exam section titles, board names, and section labels
+# that appear in the header/footer of NBME-style exam screenshots.
+_UI_CHROME_RE = re.compile(
+    r"\s+"
+    r"(?:national\s+board\s+of\s+medical\s+examiners|nbme|"
+    r"surgery\s+self.?assessment|medicine\s+self.?assessment|"
+    r"ob(?:stetrics)?(?:\s*/\s*gynecology)?\s+self.?assessment|"
+    r"pediatrics\s+self.?assessment|psychiatry\s+self.?assessment|"
+    r"self.?assessment|"
+    r"exam\s+section\s*:\s*item\s+\d+\s+of\s+\d+)"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_ui_chrome(text: str) -> str:
+    """Remove exam title / section label that leaked into the end of an answer choice."""
+    return _UI_CHROME_RE.sub("", text)
 
 
 def extract_answer_from_page(page: fitz.Page) -> tuple[int, str] | None:
