@@ -53,7 +53,9 @@ def _process_upload(job_id: str, pdf_path: str, exam_set_id: int):
     db = SessionLocal()
     try:
         parsed_questions = extract_questions_from_pdf(pdf_path, exam_set_id)
+        print(f"[upload] parsed {len(parsed_questions)} questions from {pdf_path}")
         if not parsed_questions:
+            print(f"[upload] no questions found — deleting exam_set {exam_set_id}")
             exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
             if exam_set:
                 db.delete(exam_set)
@@ -76,6 +78,7 @@ def _process_upload(job_id: str, pdf_path: str, exam_set_id: int):
         exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
         exam_set.total_questions = len(parsed_questions)
         db.commit()
+        print(f"[upload] committed {len(parsed_questions)} questions for exam_set {exam_set_id}")
         _jobs[job_id] = {"status": "done", "exam_set_id": exam_set_id}
     except Exception as e:
         import traceback
