@@ -1,12 +1,16 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./usmle_exam.db"
+# Render provides DATABASE_URL starting with "postgres://" but SQLAlchemy
+# requires "postgresql://". Fall back to SQLite for local development.
+_url = os.environ.get("DATABASE_URL", "sqlite:///./usmle_exam.db")
+if _url.startswith("postgres://"):
+    _url = _url.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
+_kwargs = {"check_same_thread": False} if _url.startswith("sqlite") else {}
+engine = create_engine(_url, connect_args=_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
