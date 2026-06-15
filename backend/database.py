@@ -7,7 +7,9 @@ from sqlalchemy.orm import sessionmaker
 # requires "postgresql://". Fall back to SQLite for local development.
 _url = os.environ.get("DATABASE_URL", "sqlite:///./usmle_exam.db")
 if _url.startswith("postgres://"):
-    _url = _url.replace("postgres://", "postgresql://", 1)
+    _url = _url.replace("postgres://", "postgresql+pg8000://", 1)
+elif _url.startswith("postgresql://"):
+    _url = _url.replace("postgresql://", "postgresql+pg8000://", 1)
 
 _kwargs = {"check_same_thread": False} if _url.startswith("sqlite") else {}
 engine = create_engine(_url, connect_args=_kwargs)
