@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { staticUrl } from '../api'
 
-const CHOICE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+const CHOICE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 
 function mergeRanges(ranges) {
   if (!ranges.length) return []

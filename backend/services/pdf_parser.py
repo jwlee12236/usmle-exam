@@ -16,8 +16,9 @@ IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 # Decimal numbers like "14.5" are rejected because \s+ needs a space after ".".
 QUESTION_START_RE = re.compile(r"^(\d\s?\d?)\s*\.\s+(.*)")
 
-# Regex to detect answer choices after text cleaning normalizes them to "A. text"
-CHOICE_RE = re.compile(r"^([A-G])\.\s+(.+)$")
+# Regex to detect answer choices after text cleaning normalizes them to "A. text".
+# Covers A–Z to handle NBME Extended Matching Question banks that go up to N.
+CHOICE_RE = re.compile(r"^([A-Z])\.\s+(.+)$")
 
 # Junk lines from screenshotted NBME/UWorld interfaces that appear between questions
 _JUNK_EXACT = {
@@ -118,7 +119,7 @@ def _clean_pdf_text(text: str) -> str:
         # skip the placeholder; next iteration picks up the choice line normally.
         if re.match(r'^[Q0Oo]\s*$', ls) and i + 1 < len(lines):
             next_ls = lines[i + 1].strip()
-            if re.match(r'^[A-G][.)]\s+', next_ls):
+            if re.match(r'^[A-Z][.)]\s+', next_ls):
                 i += 1
                 continue
 
@@ -127,10 +128,15 @@ def _clean_pdf_text(text: str) -> str:
 
     text = '\n'.join(cleaned)
 
-    # Normalize "Q A) text" / "0 A) text" → "A. text"
-    text = re.sub(r'(?m)^[Q0Oo]\s+([A-G])[.)]\s+', r'\1. ', text)
+    # Normalize "Q A) text" / "0 A) text" → "A. text" (EMQ banks go up to N+)
+    text = re.sub(r'(?m)^[Q0Oo]\s+([A-Z])[.)]\s+', r'\1. ', text)
     # Normalize bare "A) text" → "A. text"
-    text = re.sub(r'(?m)^([A-G])\)\s+', r'\1. ', text)
+    text = re.sub(r'(?m)^([A-Z])\)\s+', r'\1. ', text)
+
+    # Fix 1: Join standalone question numbers with the line that follows them.
+    # Some PDFs render "31 .\nThree days after..." (number alone, text on next line).
+    # QUESTION_START_RE needs text after the period, so we collapse these here.
+    text = re.sub(r'(?m)^(\d{1,2})\s*\.\s*\n', r'\1. ', text)
 
     return text
 
@@ -477,8 +483,15 @@ def _parse_questions_only(text: str, page_images: dict) -> list[dict]:
 
         choice_match = CHOICE_RE.match(ls)
         if choice_match:
-            current_section = "choices"
-            current_q["choices"][choice_match.group(1)] = choice_match.group(2).strip()
+            letter = choice_match.group(1)
+            # Fix 2: Extended choices (H+) are only accepted once already in the choices
+            # section. This prevents stem sentences starting with a capital letter + ". "
+            # from being misread as a choice before any A-G choices have been seen.
+            if letter <= 'G' or current_section == "choices":
+                current_section = "choices"
+                current_q["choices"][letter] = choice_match.group(2).strip()
+            elif _MEANINGFUL_RE.search(ls):
+                current_q["stem"] += ls + "\n"
         elif current_section == "stem" and ls and _MEANINGFUL_RE.search(ls):
             # Only add lines that contain real words or lab values — drops chart/graph noise
             current_q["stem"] += ls + "\n"
@@ -489,6 +502,19 @@ def _parse_questions_only(text: str, page_images: dict) -> list[dict]:
     if current_q:
         current_q["stem"] = _format_lab_tables(current_q["stem"].strip())
         questions.append(current_q)
+
+    # Fix 3: EMQ follow-on propagation.
+    # In NBME Extended Matching Questions the lead question (e.g. Q15) carries choices
+    # A–H; follow-ons (Q16, Q17) share that bank and have no choices of their own.
+    # Any question that parsed with zero choices inherits the preceding question's bank.
+    for i in range(1, len(questions)):
+        if not questions[i]["choices"] and questions[i - 1]["choices"]:
+            questions[i]["choices"] = dict(questions[i - 1]["choices"])
+
+    # Sort choices alphabetically. Two-column EMQ PDFs extract as A,J,B,K,C,L...
+    # due to column-order text extraction; sort restores the expected A,B,C... order.
+    for q in questions:
+        q["choices"] = dict(sorted(q["choices"].items()))
 
     return questions
 

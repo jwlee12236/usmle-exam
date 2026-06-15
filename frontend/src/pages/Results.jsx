@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import api, { staticUrl } from '../api'
 
-const CHOICE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+const CHOICE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60)
