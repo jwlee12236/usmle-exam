@@ -97,7 +97,8 @@ timer, header bar, exam section label (e.g. "Exam Section: Item N of 50"), exam 
 - Each answer choice must contain ONLY the choice text — never append any exam title, header, or footer text \
 to the end of a choice; the last visible answer choice is especially prone to this — strip it
 - If the stem contains a data table (lab values, vitals, columns of test names and results), \
-render it as a GitHub-flavored markdown table using | pipe syntax to preserve alignment
+format each row as "Lab name: value" on its own line (e.g. "Hemoglobin: 9.2 g/dL") — \
+do NOT use markdown pipe/table syntax
 - Return ONLY the JSON object, no markdown or explanation"""
 
 _TARGETED_ANSWER_PROMPT = """\
