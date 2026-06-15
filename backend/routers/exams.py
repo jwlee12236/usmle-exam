@@ -78,6 +78,8 @@ def _process_upload(job_id: str, pdf_path: str, exam_set_id: int):
         db.commit()
         _jobs[job_id] = {"status": "done", "exam_set_id": exam_set_id}
     except Exception as e:
+        import traceback
+        print(f"[upload error] exam_set_id={exam_set_id}: {e}\n{traceback.format_exc()}")
         try:
             exam_set = db.query(models.ExamSet).filter(models.ExamSet.id == exam_set_id).first()
             if exam_set:

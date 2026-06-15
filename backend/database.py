@@ -13,6 +13,7 @@ elif _url.startswith("postgresql://"):
 
 _kwargs = {"check_same_thread": False} if _url.startswith("sqlite") else {}
 engine = create_engine(_url, connect_args=_kwargs)
+print(f"[DB] using: {_url[:30]}...")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
